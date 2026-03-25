@@ -3,7 +3,6 @@ package com.lineside.mimiwidget.widget
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
@@ -36,6 +35,7 @@ import com.lineside.mimiwidget.data.SongRepository
 import com.lineside.mimiwidget.data.WidgetDataStore
 import com.lineside.mimiwidget.data.dataStore
 
+// ウィジェットの更新ボタン（↻）が押された時に実行される処理です。
 class RefreshAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         val repository = SongRepository(context)
@@ -44,10 +44,12 @@ class RefreshAction : ActionCallback {
     }
 }
 
+// ウィジェットの本体クラスです。描画の指示やデータの読み込みを行います。
 class MimiWidget : GlanceAppWidget() {
 
     companion object {
         const val TAG = "MimiWidget_LOG"
+        // アプリ側からウィジェットの表示を強制的に最新にするための関数です。
         suspend fun forceUpdate(context: Context) {
             val manager = GlanceAppWidgetManager(context)
             manager.getGlanceIds(MimiWidget::class.java).forEach { glanceId ->
@@ -63,6 +65,7 @@ class MimiWidget : GlanceAppWidget() {
             val currentContext = LocalContext.current
             val prefs by currentContext.dataStore.data.collectAsState(initial = null)
 
+            // データがまだ読み込めていない瞬間の保険です。
             if (prefs == null) {
                 Box(modifier = GlanceModifier.fillMaxSize().background(Color.Black)) {}
                 return@provideContent
@@ -73,7 +76,7 @@ class MimiWidget : GlanceAppWidget() {
             val rawDate = prefs!![WidgetDataStore.KEY_LAST_UPDATE] ?: ""
             val youtubeId = prefs!![WidgetDataStore.KEY_YOUTUBE_ID] ?: ""
 
-            // 【新機能】データが空っぽ（初期状態やエラー時）の場合はタップを促す画面を出します
+            // 【データ未設定時】初回起動時など、曲がない場合はアプリを開くように促します。
             if (youtubeId.isEmpty()) {
                 Box(
                     modifier = GlanceModifier.fillMaxSize()
@@ -108,6 +111,7 @@ class MimiWidget : GlanceAppWidget() {
 
             val displayLyrics = if (rawLyrics.isNotEmpty()) "「$rawLyrics」" else ""
 
+            // 日付のフォーマット（年や曜日を表示するかどうか）を計算します。
             var formattedDate = rawDate
             try {
                 val dateObj = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(rawDate)
@@ -123,15 +127,17 @@ class MimiWidget : GlanceAppWidget() {
             var bitmap by remember { mutableStateOf<Bitmap?>(null) }
             var isDarkImage by remember { mutableStateOf(true) }
 
+            // 画像の非同期読み込みと、明るさの解析を実行します。
             LaunchedEffect(youtubeId) {
                 val loadedBitmap = loadBitmapWithFallback(currentContext, youtubeId)
                 bitmap = loadedBitmap
                 isDarkImage = isBitmapDark(loadedBitmap)
             }
 
-            // オフライン時は強制的に白文字にします
+            // 画像が暗ければ白文字、明るければ黒文字（半透明）に自動調整します。
             val textColor = if (bitmap == null || isDarkImage) Color.White else Color(0xDD000000)
 
+            // 実際のUI描画部品（MimiWidgetContent）を呼び出します。
             MimiWidgetContent(
                 currentContext, title, displayLyrics, formattedDate, bitmap, textColor, showRefreshBtn,
                 fontFamLyricsStr, fontSizeLyrics, fontFamDateStr, fontSizeDate, fontFamTitleStr, fontSizeTitle
@@ -139,6 +145,7 @@ class MimiWidget : GlanceAppWidget() {
         }
     }
 
+    // 画像の明るさを10ピクセル単位で間引いて高速に解析し、暗い画像かどうかを判定します。
     private fun isBitmapDark(bitmap: Bitmap?): Boolean {
         if (bitmap == null) return true
         return try {
@@ -159,7 +166,7 @@ class MimiWidget : GlanceAppWidget() {
         } catch (e: Exception) { true }
     }
 
-    // 最高画質を取得し、失敗したら標準画質を再取得する賢い関数です
+    // 最高画質(maxresdefault)を取得し、失敗した場合は標準画質(hqdefault)で再取得を行う安全な画像ローダーです。
     private suspend fun loadBitmapWithFallback(context: Context, youtubeId: String): Bitmap? {
         if (youtubeId.isEmpty()) return null
 
@@ -167,7 +174,6 @@ class MimiWidget : GlanceAppWidget() {
         var request = ImageRequest.Builder(context).data(maxResUrl).allowHardware(false).build()
         var result = context.imageLoader.execute(request)
 
-        // 取得に失敗した場合（SuccessResultじゃない場合）は、hqdefaultでリトライします
         if (result !is coil.request.SuccessResult) {
             Log.d(TAG, "maxresdefaultの取得に失敗したため、hqdefaultでフォールバックします")
             val hqUrl = "https://img.youtube.com/vi/$youtubeId/hqdefault.jpg"
@@ -179,6 +185,7 @@ class MimiWidget : GlanceAppWidget() {
     }
 }
 
+// ウィジェットの見た目（UI）を構築するコンポーザブル関数です。
 @Composable
 fun MimiWidgetContent(
     context: Context, title: String, displayLyrics: String, date: String, bitmap: Bitmap?, textColor: Color, showRefreshBtn: Boolean,
@@ -186,13 +193,15 @@ fun MimiWidgetContent(
 ) {
     val size = LocalSize.current
     val colorProvider = ColorProvider(day = textColor, night = textColor)
+
+    // ウィジェット側はAndroidシステムの制限で独自の.ttfを直接読み込めないため、標準のSerif/SansSerifを使用します。
     val fontFamLyrics = if (fontFamLyricsStr == "Serif") FontFamily.Serif else FontFamily.SansSerif
     val fontFamDate = if (fontFamDateStr == "Serif") FontFamily.Serif else FontFamily.SansSerif
     val fontFamTitle = if (fontFamTitleStr == "Serif") FontFamily.Serif else FontFamily.SansSerif
 
     Box(modifier = GlanceModifier.fillMaxSize()) {
 
-        // 【新機能】画像がある時は表示、無い時（オフライン時）は素敵なプレースホルダーを表示します
+        // 画像がある場合は背景として表示、無い場合はオフライン用のUIを表示します。
         if (bitmap != null) {
             Image(
                 provider = ImageProvider(bitmap),
@@ -216,9 +225,11 @@ fun MimiWidgetContent(
             }
         }
 
+        // 文字を読みやすくするためのグラデーションのフィルター（暗め・明るめ）を重ねます。
         val gradientRes = if (textColor == Color.White) R.drawable.widget_gradient_overlay else R.drawable.widget_light_overlay
         Box(modifier = GlanceModifier.fillMaxSize().background(ImageProvider(gradientRes))) {}
 
+        // テキスト情報を配置するメインのカラムです。タップでアプリ本体を起動します。
         Column(
             modifier = GlanceModifier.fillMaxSize().padding(16.dp).clickable(
                 actionStartActivity(Intent(context, MainActivity::class.java).apply {
@@ -228,11 +239,14 @@ fun MimiWidgetContent(
         ) {
             Row(modifier = GlanceModifier.fillMaxWidth()) {
                 if (size.height >= 110.dp && displayLyrics.isNotEmpty()) {
+
+                    // シャドウを消して、シンプルで美しいテキスト表示に戻しました
                     Text(
                         text = displayLyrics,
                         style = TextStyle(color = colorProvider, fontSize = fontSizeLyrics.sp, fontStyle = FontStyle.Italic, fontFamily = fontFamLyrics),
                         modifier = GlanceModifier.defaultWeight()
                     )
+
                 } else {
                     Spacer(modifier = GlanceModifier.defaultWeight())
                 }
@@ -248,12 +262,15 @@ fun MimiWidgetContent(
 
             Spacer(modifier = GlanceModifier.defaultWeight())
 
+            // 下部（日付とタイトル）の描画部分です。こちらもシンプルな表示に戻しました。
             Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = date,
                     style = TextStyle(color = colorProvider, fontSize = fontSizeDate.sp, fontWeight = FontWeight.Medium, fontFamily = fontFamDate)
                 )
+
                 Spacer(modifier = GlanceModifier.defaultWeight())
+
                 Text(
                     text = title,
                     style = TextStyle(color = colorProvider, fontSize = fontSizeTitle.sp, fontWeight = FontWeight.Bold, fontFamily = fontFamTitle)

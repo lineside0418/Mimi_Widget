@@ -7,10 +7,8 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 
-// 履歴を保存するためのデータ型です
 data class UpdateHistory(val timestamp: Long, val title: String)
 
-// アプリ内のどこからでもアクセスできるDataStoreです。
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "mimi_widget_prefs")
 
 object WidgetDataStore {
@@ -42,8 +40,6 @@ object WidgetDataStore {
     val KEY_FONT_SIZE_TITLE = floatPreferencesKey("font_size_title")
 
     val KEY_CACHED_SONGS = stringPreferencesKey("cached_songs")
-
-    // 【追加】更新履歴を保存するためのキー
     val KEY_UPDATE_HISTORY = stringPreferencesKey("update_history")
 
     suspend fun saveTodaysSong(context: Context, song: Song, currentDate: String, currentMillis: Long) {
@@ -54,7 +50,6 @@ object WidgetDataStore {
             preferences[KEY_LAST_UPDATE] = currentDate
             preferences[KEY_LAST_UPDATE_MILLIS] = currentMillis
 
-            // 履歴を読み込んで新しいものを追加し、最新10件だけを残して保存します
             val historyJson = preferences[KEY_UPDATE_HISTORY] ?: "[]"
             val type = object : TypeToken<List<UpdateHistory>>() {}.type
             val historyList: List<UpdateHistory> = try {
@@ -66,10 +61,13 @@ object WidgetDataStore {
         }
     }
 
+    // 【修正】DataStoreの仕様に合わせて、新しいMutableSetを生成してから要素を追加し、保存するようにしました。
     suspend fun addPlayedSong(context: Context, youtubeId: String) {
         context.dataStore.edit { preferences ->
             val currentPlayed = preferences[KEY_PLAYED_SONGS] ?: emptySet()
-            preferences[KEY_PLAYED_SONGS] = currentPlayed + youtubeId
+            val newPlayed = currentPlayed.toMutableSet()
+            newPlayed.add(youtubeId)
+            preferences[KEY_PLAYED_SONGS] = newPlayed.toSet()
         }
     }
 

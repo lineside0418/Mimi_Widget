@@ -2,10 +2,12 @@ package com.lineside.mimiwidget
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -45,15 +47,77 @@ import com.lineside.mimiwidget.data.UpdateHistory
 import com.lineside.mimiwidget.data.WidgetDataStore
 import com.lineside.mimiwidget.data.dataStore
 import com.lineside.mimiwidget.widget.MimiWidget
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Calendar
+
+// --- 【新規追加】バージョン確認用の便利機能 ---
+
+// 端末にインストールされている現在のアプリのバージョンを取得します
+fun getAppVersionName(context: Context): String {
+    return try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
+    } catch (e: Exception) {
+        "1.0.0"
+    }
+}
+
+// GitHubのAPIを叩いて、最新リリースのバージョン(タグ名)とURLを取得します
+suspend fun fetchLatestGithubRelease(): Pair<String, String>? = withContext(Dispatchers.IO) {
+    try {
+        val url = URL("https://api.github.com/repos/lineside0418/Mimi_Widget/releases/latest")
+        val connection = url.openConnection() as HttpURLConnection
+        connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
+
+        if (connection.responseCode == 200) {
+            val response = connection.inputStream.bufferedReader().use { it.readText() }
+            val jsonObject = JSONObject(response)
+            // "v1.0.2" のようなタグ名から "v" を抜いた数字部分を取得します
+            val tagName = jsonObject.optString("tag_name", "").replace("v", "")
+            val htmlUrl = jsonObject.optString("html_url", "")
+            if (tagName.isNotEmpty() && htmlUrl.isNotEmpty()) {
+                return@withContext Pair(tagName, htmlUrl)
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("GithubRelease", "Failed to fetch release", e)
+    }
+    return@withContext null
+}
+
+// バージョンの数字を比較して、新しいか(アップデートが必要か)を判定します
+fun isNewerVersion(latest: String, current: String): Boolean {
+    val lParts = latest.split(".").map { it.toIntOrNull() ?: 0 }
+    val cParts = current.split(".").map { it.toIntOrNull() ?: 0 }
+    val length = maxOf(lParts.size, cParts.size)
+    for (i in 0 until length) {
+        val l = lParts.getOrElse(i) { 0 }
+        val c = cParts.getOrElse(i) { 0 }
+        if (l > c) return true
+        if (l < c) return false
+    }
+    return false
+}
+
+// --- メインのアクティビティ ---
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         lifecycleScope.launch {
+            val prefs = dataStore.data.first()
+            val currentYoutubeId = prefs[WidgetDataStore.KEY_YOUTUBE_ID] ?: ""
+            if (currentYoutubeId.isEmpty()) {
+                SongRepository(this@MainActivity).fetchAndSaveRandomSong()
+            }
             AlarmScheduler.scheduleNextUpdate(this@MainActivity)
         }
         setContent {
@@ -75,7 +139,6 @@ fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
     }
 }
 
-// 【追加部品】エラー時にhqdefaultに切り替える賢いサムネイルです
 @Composable
 fun YoutubeThumbnail(youtubeId: String, modifier: Modifier = Modifier) {
     var useHqDefault by remember(youtubeId) { mutableStateOf(false) }
@@ -105,6 +168,7 @@ fun MainScreen() {
 
     var selectedTab by remember { mutableStateOf(0) }
     data class TabItem(val title: String, val icon: ImageVector)
+
     val tabs = mutableListOf(
         TabItem("Home", Icons.Rounded.Home),
         TabItem("一般", Icons.Rounded.Settings),
@@ -115,6 +179,51 @@ fun MainScreen() {
     tabs.add(TabItem("情報", Icons.Rounded.Info))
 
     if (selectedTab >= tabs.size) selectedTab = 0
+
+    // 【新規追加】バージョンのチェックと状態の管理
+    val currentVersion = remember { getAppVersionName(context) }
+    var latestVersion by remember { mutableStateOf<String?>(null) }
+    var releaseUrl by remember { mutableStateOf<String?>(null) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+
+    // アプリ起動時に1回だけ、GitHubから最新バージョンを取得して比較します
+    LaunchedEffect(Unit) {
+        val releaseInfo = fetchLatestGithubRelease()
+        if (releaseInfo != null) {
+            latestVersion = releaseInfo.first
+            releaseUrl = releaseInfo.second
+            if (isNewerVersion(releaseInfo.first, currentVersion)) {
+                showUpdateDialog = true
+            }
+        }
+    }
+
+    // 更新ダイアログの表示処理
+    if (showUpdateDialog && releaseUrl != null) {
+        AlertDialog(
+            onDismissRequest = { showUpdateDialog = false },
+            title = { Text("アップデートのお知らせ", fontWeight = FontWeight.Bold) },
+            text = { Text("新しいバージョン (v$latestVersion) がリリースされています！\nGitHubのページを開いて更新しますか？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUpdateDialog = false
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)))
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "ブラウザを開けませんでした", Toast.LENGTH_SHORT).show()
+                    }
+                }) {
+                    Text("更新する", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUpdateDialog = false }) {
+                    Text("あとで", color = Color.Gray)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -143,8 +252,8 @@ fun MainScreen() {
                 "一般" -> GeneralSettingsScreen()
                 "外観" -> AppearanceSettingsScreen()
                 "曲" -> SongsSettingsScreen()
-                "デバッグ" -> DebugScreen()
-                "情報" -> CreditsScreen()
+                "デバッグ" -> DebugScreen(currentVersion, latestVersion) // バージョン情報を渡します
+                "情報" -> CreditsScreen(currentVersion) // 現在のバージョンを渡します
             }
         }
     }
@@ -159,6 +268,15 @@ fun DashboardScreen() {
     val rawLyrics = prefs?.get(WidgetDataStore.KEY_LYRICS) ?: "ウィジェットを追加するか、設定から曲を更新してください"
     val youtubeId = prefs?.get(WidgetDataStore.KEY_YOUTUBE_ID) ?: ""
     val displayLyrics = if (rawLyrics.isNotEmpty() && youtubeId.isNotEmpty()) "「$rawLyrics」" else rawLyrics
+
+    val fontFamLyricsStr = prefs?.get(WidgetDataStore.KEY_FONT_FAMILY_LYRICS) ?: "Serif"
+    val fontFamTitleStr = prefs?.get(WidgetDataStore.KEY_FONT_FAMILY_TITLE) ?: "Serif"
+
+    val customMincho = androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Font(R.font.mincho))
+    val customGothic = androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Font(R.font.gothic))
+
+    val fontFamLyrics = if (fontFamLyricsStr == "Serif") customMincho else customGothic
+    val fontFamTitle = if (fontFamTitleStr == "Serif") customMincho else customGothic
 
     val lastUpdateMillis = prefs?.get(WidgetDataStore.KEY_LAST_UPDATE_MILLIS) ?: System.currentTimeMillis()
     val mode = prefs?.get(WidgetDataStore.KEY_UPDATE_MODE) ?: "daily"
@@ -206,17 +324,16 @@ fun DashboardScreen() {
     val scrollState = rememberScrollState()
 
     Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        // 【修正】フォールバック対応サムネイル部品に置き換え
         YoutubeThumbnail(
             youtubeId = youtubeId,
             modifier = Modifier.fillMaxWidth().aspectRatio(16f/9f).clip(RoundedCornerShape(24.dp))
         )
 
         Spacer(modifier = Modifier.height(24.dp))
-        Text(text = title, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
-        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = title, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, fontFamily = fontFamTitle, textAlign = TextAlign.Center)
 
-        Text(text = displayLyrics, fontSize = 16.sp, color = Color.LightGray, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = displayLyrics, fontSize = 16.sp, color = Color.LightGray, fontFamily = fontFamLyrics, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
 
         Spacer(modifier = Modifier.height(32.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -457,7 +574,6 @@ fun SongsSettingsScreen() {
                 }
             ) {
                 Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // 【修正】フォールバック対応サムネイル部品に置き換え
                     YoutubeThumbnail(
                         youtubeId = song.youtubeId,
                         modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp))
@@ -477,8 +593,9 @@ fun SongsSettingsScreen() {
     }
 }
 
+// 【新規追加】バージョン情報を引数で受け取るように変更しました
 @Composable
-fun DebugScreen() {
+fun DebugScreen(currentVersion: String, latestVersion: String?) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var songList by remember { mutableStateOf<List<Song>>(emptyList()) }
@@ -497,6 +614,24 @@ fun DebugScreen() {
     }
 
     Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
+
+        // --- 【新規追加】アプリのバージョン情報をデバッグ画面のトップに表示 ---
+        Text("アプリ情報", modifier = Modifier.padding(start = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp)
+        SettingsCard {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("現在のバージョン", fontSize = 14.sp, color = Color.Gray)
+                Text("v$currentVersion", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Divider(color = Color.DarkGray, thickness = 0.5.dp)
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("GitHubの最新リリース", fontSize = 14.sp, color = Color.Gray)
+                Text(if (latestVersion != null) "v$latestVersion" else "取得中/オフライン", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (latestVersion != null && isNewerVersion(latestVersion, currentVersion)) MaterialTheme.colorScheme.primary else Color.White)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text("更新履歴 (最新10件)", modifier = Modifier.padding(start = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp)
         SettingsCard {
@@ -556,41 +691,36 @@ fun DebugScreen() {
     }
 }
 
-// 【大改造】クレジット画面のテキスト修正とリンク追加
+// 【新規追加】自動で現在のバージョンを読み込むように修正しました
 @Composable
-fun CreditsScreen() {
-    val context = LocalContext.current // インテント用にコンテキストを取得
+fun CreditsScreen(currentVersion: String) {
+    val context = LocalContext.current
 
-    // Thanksメンバーが多い場合を考慮してスクロールできるようにします
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // トップの余白
         Spacer(modifier = Modifier.height(64.dp))
 
         Text("MIMI Widget", fontSize = 32.sp, fontWeight = FontWeight.ExtraBold)
-        Text("Version 1.0.0", color = Color.Gray, fontSize = 14.sp)
+        // 手書きから、システムから自動取得したバージョンを表示するように変更しました
+        Text("Version $currentVersion", color = Color.Gray, fontSize = 14.sp)
 
         Spacer(modifier = Modifier.height(48.dp))
 
         SettingsCard {
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                // --- 開発・デザイン ---
                 Text("【開発・デザイン】", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
                 Text("lineside", fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // --- Musics (Characterを削除) ---
                 Text("【Musics】", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
                 Text("MIMI", fontSize = 18.sp, fontWeight = FontWeight.Bold)
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // --- Special Thanks (新規追加) ---
                 Text("【Special Thanks】", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
-                // メンバーリスト。フォントサイズを少し小さく、太さを中くらいに調整。
                 Text("はや", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                 Text("mon", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                 Text("ゆーさぶ", fontSize = 16.sp, fontWeight = FontWeight.Medium)
@@ -598,9 +728,41 @@ fun CreditsScreen() {
             }
         }
 
-        Spacer(modifier = Modifier.height(48.dp))
+        Spacer(modifier = Modifier.height(32.dp))
 
-        // --- MIMIさんへの公式リンク ---
+        Text("Source Code & Support", color = Color.Gray, fontSize = 14.sp)
+        Spacer(modifier = Modifier.height(12.dp))
+        SettingsCard {
+            Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "This project is developed as open-source software.\nIf you find this widget useful, we would greatly appreciate your support by starring the repository on GitHub.",
+                    fontSize = 14.sp,
+                    color = Color.LightGray,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lineside0418/Mimi_Widget")))
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "GitHubを開けませんでした", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(Icons.Rounded.Star, contentDescription = "Star", tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Star on GitHub", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+
         Text("MIMI Official Links", color = Color.Gray, fontSize = 14.sp)
         Spacer(modifier = Modifier.height(8.dp))
         Row(
@@ -618,7 +780,6 @@ fun CreditsScreen() {
             }
             TextButton(onClick = {
                 try {
-                    // Twitter (X) のID。
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://x.com/mimi_3mi")))
                 } catch (e: Exception) {
                     Toast.makeText(context, "Twitterを開けませんでした", Toast.LENGTH_SHORT).show()
@@ -628,7 +789,19 @@ fun CreditsScreen() {
             }
         }
 
-        // ボトムの余白
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Text("【注意事項】", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsCard {
+            Text(
+                text = "本アプリはファンが作成した非公式アプリケーションであり、アーティスト「MIMI」様および関係者様とは一切関係ありません。\nアプリ内で表示される楽曲、歌詞、画像等の著作権・肖像権は、すべてそれぞれの権利所有者様に帰属します。",
+                fontSize = 12.sp,
+                color = Color.LightGray,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+        }
         Spacer(modifier = Modifier.height(64.dp))
     }
 }

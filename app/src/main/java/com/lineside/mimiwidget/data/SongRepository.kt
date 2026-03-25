@@ -11,7 +11,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// 通信（API）と保存（DataStore）を繋ぐ、ロジックの司令塔クラスです。
 class SongRepository(private val context: Context) {
 
     suspend fun fetchAllSongs(): List<Song>? {
@@ -36,10 +35,16 @@ class SongRepository(private val context: Context) {
 
     suspend fun saveSpecificSong(song: Song) {
         val todayString = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-        // 【追加】現在の正確な時間を取得します
         val currentMillis = System.currentTimeMillis()
 
         WidgetDataStore.saveTodaysSong(context, song, todayString, currentMillis)
+
+        // 【追加】手動で指定した場合も、NoRepeatがオンなら「記憶」に追加して重複を防ぎます。
+        val prefs = context.dataStore.data.first()
+        val noRepeat = prefs[WidgetDataStore.KEY_NO_REPEAT] ?: false
+        if (noRepeat) {
+            WidgetDataStore.addPlayedSong(context, song.youtubeId)
+        }
 
         try {
             MimiWidget.forceUpdate(context)
@@ -58,16 +63,30 @@ class SongRepository(private val context: Context) {
         val playedSongs = prefs[WidgetDataStore.KEY_PLAYED_SONGS] ?: emptySet()
         val noRepeat = prefs[WidgetDataStore.KEY_NO_REPEAT] ?: false
 
+        // 【追加】直前まで流れていた曲を把握します。
+        val currentYoutubeId = prefs[WidgetDataStore.KEY_YOUTUBE_ID] ?: ""
+
         var availableSongs = allSongs.filter { it.youtubeId !in disabledSongs }
         if (availableSongs.isEmpty()) availableSongs = allSongs
 
         if (noRepeat) {
             var unplayedSongs = availableSongs.filter { it.youtubeId !in playedSongs }
+
+            // もし未再生の曲がない（全曲回った）場合は記憶をリセットします。
             if (unplayedSongs.isEmpty()) {
                 WidgetDataStore.clearPlayedSongs(context)
-                unplayedSongs = availableSongs
+                // 【追加】リセット直後に「さっきまで流れていた曲」がいきなり選ばれるのを防ぎます。
+                unplayedSongs = availableSongs.filter { it.youtubeId != currentYoutubeId }
+                // もし1曲しか設定されていないなどの理由で空になったら、全曲を対象に戻します。
+                if (unplayedSongs.isEmpty()) unplayedSongs = availableSongs
             }
             availableSongs = unplayedSongs
+        } else {
+            // 【追加】NoRepeatがオフの時でも、全く同じ曲が2回連続で選ばれるのは不自然なので避けます。
+            val withoutCurrent = availableSongs.filter { it.youtubeId != currentYoutubeId }
+            if (withoutCurrent.isNotEmpty()) {
+                availableSongs = withoutCurrent
+            }
         }
 
         val randomSong = availableSongs.random()
