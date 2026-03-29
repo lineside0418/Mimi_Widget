@@ -686,14 +686,25 @@ fun SongsSettingsScreen() {
                 } else {
                     items(historyList) { history ->
                         val dateStr = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()).format(java.util.Date(history.timestamp))
+
+                        // isNewCycle が true の場合は枠線をつけてハイライトします
+                        val cardBorder = if (history.isNewCycle) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+
                         Card(
                             shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            border = cardBorder, // ここに追加
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
                         ) {
                             Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(dateStr, fontSize = 12.sp, color = Color.Gray, modifier = Modifier.width(120.dp))
-                                Text(history.title, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(history.title, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    // 新クールの時は小さなテキストを追加します
+                                    if (history.isNewCycle) {
+                                        Text("✨ 新クール開始", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
                             }
                         }
                     }

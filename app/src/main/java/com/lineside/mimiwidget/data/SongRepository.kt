@@ -33,11 +33,11 @@ class SongRepository(private val context: Context) {
         }
     }
 
-    suspend fun saveSpecificSong(song: Song) {
+    suspend fun saveSpecificSong(song: Song, isNewCycle: Boolean = false) {
         val todayString = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
         val currentMillis = System.currentTimeMillis()
 
-        WidgetDataStore.saveTodaysSong(context, song, todayString, currentMillis)
+        WidgetDataStore.saveTodaysSong(context, song, todayString, currentMillis, isNewCycle)
 
         // 【追加】手動で指定した場合も、NoRepeatがオンなら「記憶」に追加して重複を防ぎます。
         val prefs = context.dataStore.data.first()
@@ -69,6 +69,8 @@ class SongRepository(private val context: Context) {
         var availableSongs = allSongs.filter { it.youtubeId !in disabledSongs }
         if (availableSongs.isEmpty()) availableSongs = allSongs
 
+        var cycleReset = false //新クール判定フラグを追加
+
         if (noRepeat) {
             var unplayedSongs = availableSongs.filter { it.youtubeId !in playedSongs }
 
@@ -76,6 +78,7 @@ class SongRepository(private val context: Context) {
             if (unplayedSongs.isEmpty()) {
                 WidgetDataStore.clearPlayedSongs(context)
                 // 【追加】リセット直後に「さっきまで流れていた曲」がいきなり選ばれるのを防ぎます。
+                cycleReset = true //全曲回ったのでフラグをONにします
                 unplayedSongs = availableSongs.filter { it.youtubeId != currentYoutubeId }
                 // もし1曲しか設定されていないなどの理由で空になったら、全曲を対象に戻します。
                 if (unplayedSongs.isEmpty()) unplayedSongs = availableSongs
@@ -95,7 +98,7 @@ class SongRepository(private val context: Context) {
             WidgetDataStore.addPlayedSong(context, randomSong.youtubeId)
         }
 
-        saveSpecificSong(randomSong)
+        saveSpecificSong(randomSong, isNewCycle = cycleReset)
         return true
     }
 }

@@ -9,7 +9,7 @@ import com.google.gson.reflect.TypeToken
 import java.util.Calendar
 import java.util.TimeZone
 
-data class UpdateHistory(val timestamp: Long, val title: String)
+data class UpdateHistory(val timestamp: Long, val title: String, val isNewCycle: Boolean = false)
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "mimi_widget_prefs")
 
@@ -67,7 +67,7 @@ object WidgetDataStore {
         return ((current - start) / (1000 * 60 * 60 * 24)) + 1
     }
 
-    suspend fun saveTodaysSong(context: Context, song: Song, currentDate: String, currentMillis: Long) {
+    suspend fun saveTodaysSong(context: Context, song: Song, currentDate: String, currentMillis: Long, isNewCycle: Boolean = false) {
         context.dataStore.edit { preferences ->
             preferences[KEY_TITLE] = song.title
             preferences[KEY_LYRICS] = song.lyrics ?: ""
@@ -81,8 +81,8 @@ object WidgetDataStore {
                 Gson().fromJson(historyJson, type) ?: emptyList()
             } catch (e: Exception) { emptyList() }
 
-            // 【変更】履歴の最大保存数を10件から200件に拡張しました
-            val newHistory = (listOf(UpdateHistory(currentMillis, song.title)) + historyList).take(200)
+            // isNewCycle を履歴データに含めます
+            val newHistory = (listOf(UpdateHistory(currentMillis, song.title, isNewCycle)) + historyList).take(200)
             preferences[KEY_UPDATE_HISTORY] = Gson().toJson(newHistory)
         }
     }

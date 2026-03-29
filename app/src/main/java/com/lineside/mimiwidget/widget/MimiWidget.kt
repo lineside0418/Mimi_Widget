@@ -104,20 +104,16 @@ class MimiWidget : GlanceAppWidget() {
             val fontFamTitleStr = prefs!![WidgetDataStore.KEY_FONT_FAMILY_TITLE] ?: "Serif"
             val fontSizeTitle = prefs!![WidgetDataStore.KEY_FONT_SIZE_TITLE] ?: 20f
 
-            // 【追加】朝活モードの設定状態を取得します
             val isAsakatsu = prefs!![WidgetDataStore.KEY_ASAKATSU_MODE] ?: false
             val asakatsuStartMillis = prefs!![WidgetDataStore.KEY_ASAKATSU_START_MILLIS] ?: System.currentTimeMillis()
 
             val displayLyrics = if (rawLyrics.isNotEmpty()) "「$rawLyrics」" else ""
 
             var formattedDate = rawDate
-
-            // 【変更】朝活モードがONの場合は、日付を強制的に「朝活 ◯日目」に置き換えます
             if (isAsakatsu) {
                 val dayCount = WidgetDataStore.calculateAsakatsuDays(asakatsuStartMillis, System.currentTimeMillis())
                 formattedDate = "朝活 ${dayCount}日目"
             } else {
-                // 通常モード時の日付フォーマット処理
                 try {
                     val dateObj = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(rawDate)
                     if (dateObj != null) {
@@ -194,6 +190,7 @@ fun MimiWidgetContent(
     val size = LocalSize.current
     val colorProvider = ColorProvider(day = textColor, night = textColor)
 
+    // システムフォントを利用したシンプルなテキスト設定に戻しました
     val fontFamLyrics = if (fontFamLyricsStr == "Serif") FontFamily.Serif else FontFamily.SansSerif
     val fontFamDate = if (fontFamDateStr == "Serif") FontFamily.Serif else FontFamily.SansSerif
     val fontFamTitle = if (fontFamTitleStr == "Serif") FontFamily.Serif else FontFamily.SansSerif
@@ -236,6 +233,7 @@ fun MimiWidgetContent(
             Row(modifier = GlanceModifier.fillMaxWidth()) {
                 if (size.height >= 110.dp && displayLyrics.isNotEmpty()) {
 
+                    // シンプルなテキスト表示での可読性を確保
                     Text(
                         text = displayLyrics,
                         style = TextStyle(color = colorProvider, fontSize = fontSizeLyrics.sp, fontStyle = FontStyle.Italic, fontFamily = fontFamLyrics),
