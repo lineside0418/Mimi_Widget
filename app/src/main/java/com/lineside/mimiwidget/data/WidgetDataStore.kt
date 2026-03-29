@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import java.util.Calendar
+import java.util.TimeZone
 
 data class UpdateHistory(val timestamp: Long, val title: String)
 
@@ -29,6 +31,10 @@ object WidgetDataStore {
     val KEY_SHOW_REFRESH_BTN = booleanPreferencesKey("show_refresh_btn")
     val KEY_DEBUG_MODE_ENABLED = booleanPreferencesKey("debug_mode_enabled")
 
+    // 【新規】朝活モード関連のキー
+    val KEY_ASAKATSU_MODE = booleanPreferencesKey("asakatsu_mode")
+    val KEY_ASAKATSU_START_MILLIS = longPreferencesKey("asakatsu_start_millis")
+
     val KEY_DISABLED_SONGS = stringSetPreferencesKey("disabled_songs")
     val KEY_PLAYED_SONGS = stringSetPreferencesKey("played_songs")
 
@@ -41,6 +47,25 @@ object WidgetDataStore {
 
     val KEY_CACHED_SONGS = stringPreferencesKey("cached_songs")
     val KEY_UPDATE_HISTORY = stringPreferencesKey("update_history")
+
+    // 朝活モードでの経過日数を計算します（設定日を1日目とする）
+    fun calculateAsakatsuDays(startMillis: Long, currentMillis: Long): Long {
+        val start = Calendar.getInstance().apply {
+            timeInMillis = startMillis
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val current = Calendar.getInstance().apply {
+            timeInMillis = currentMillis
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        return ((current - start) / (1000 * 60 * 60 * 24)) + 1
+    }
 
     suspend fun saveTodaysSong(context: Context, song: Song, currentDate: String, currentMillis: Long) {
         context.dataStore.edit { preferences ->
@@ -56,12 +81,12 @@ object WidgetDataStore {
                 Gson().fromJson(historyJson, type) ?: emptyList()
             } catch (e: Exception) { emptyList() }
 
-            val newHistory = (listOf(UpdateHistory(currentMillis, song.title)) + historyList).take(10)
+            // 【変更】履歴の最大保存数を10件から200件に拡張しました
+            val newHistory = (listOf(UpdateHistory(currentMillis, song.title)) + historyList).take(200)
             preferences[KEY_UPDATE_HISTORY] = Gson().toJson(newHistory)
         }
     }
 
-    // 【修正】DataStoreの仕様に合わせて、新しいMutableSetを生成してから要素を追加し、保存するようにしました。
     suspend fun addPlayedSong(context: Context, youtubeId: String) {
         context.dataStore.edit { preferences ->
             val currentPlayed = preferences[KEY_PLAYED_SONGS] ?: emptySet()

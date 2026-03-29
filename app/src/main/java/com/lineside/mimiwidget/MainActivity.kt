@@ -2,7 +2,6 @@ package com.lineside.mimiwidget
 
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
@@ -55,11 +54,11 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Locale
+import java.util.TimeZone
 
-// --- 【新規追加】バージョン確認用の便利機能 ---
-
-// 端末にインストールされている現在のアプリのバージョンを取得します
 fun getAppVersionName(context: Context): String {
     return try {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
@@ -68,7 +67,6 @@ fun getAppVersionName(context: Context): String {
     }
 }
 
-// GitHubのAPIを叩いて、最新リリースのバージョン(タグ名)とURLを取得します
 suspend fun fetchLatestGithubRelease(): Pair<String, String>? = withContext(Dispatchers.IO) {
     try {
         val url = URL("https://api.github.com/repos/lineside0418/Mimi_Widget/releases/latest")
@@ -80,7 +78,6 @@ suspend fun fetchLatestGithubRelease(): Pair<String, String>? = withContext(Disp
         if (connection.responseCode == 200) {
             val response = connection.inputStream.bufferedReader().use { it.readText() }
             val jsonObject = JSONObject(response)
-            // "v1.0.2" のようなタグ名から "v" を抜いた数字部分を取得します
             val tagName = jsonObject.optString("tag_name", "").replace("v", "")
             val htmlUrl = jsonObject.optString("html_url", "")
             if (tagName.isNotEmpty() && htmlUrl.isNotEmpty()) {
@@ -93,7 +90,6 @@ suspend fun fetchLatestGithubRelease(): Pair<String, String>? = withContext(Disp
     return@withContext null
 }
 
-// バージョンの数字を比較して、新しいか(アップデートが必要か)を判定します
 fun isNewerVersion(latest: String, current: String): Boolean {
     val lParts = latest.split(".").map { it.toIntOrNull() ?: 0 }
     val cParts = current.split(".").map { it.toIntOrNull() ?: 0 }
@@ -106,8 +102,6 @@ fun isNewerVersion(latest: String, current: String): Boolean {
     }
     return false
 }
-
-// --- メインのアクティビティ ---
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -180,13 +174,11 @@ fun MainScreen() {
 
     if (selectedTab >= tabs.size) selectedTab = 0
 
-    // 【新規追加】バージョンのチェックと状態の管理
     val currentVersion = remember { getAppVersionName(context) }
     var latestVersion by remember { mutableStateOf<String?>(null) }
     var releaseUrl by remember { mutableStateOf<String?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
 
-    // アプリ起動時に1回だけ、GitHubから最新バージョンを取得して比較します
     LaunchedEffect(Unit) {
         val releaseInfo = fetchLatestGithubRelease()
         if (releaseInfo != null) {
@@ -198,7 +190,6 @@ fun MainScreen() {
         }
     }
 
-    // 更新ダイアログの表示処理
     if (showUpdateDialog && releaseUrl != null) {
         AlertDialog(
             onDismissRequest = { showUpdateDialog = false },
@@ -252,8 +243,8 @@ fun MainScreen() {
                 "一般" -> GeneralSettingsScreen()
                 "外観" -> AppearanceSettingsScreen()
                 "曲" -> SongsSettingsScreen()
-                "デバッグ" -> DebugScreen(currentVersion, latestVersion) // バージョン情報を渡します
-                "情報" -> CreditsScreen(currentVersion) // 現在のバージョンを渡します
+                "デバッグ" -> DebugScreen(currentVersion, latestVersion)
+                "情報" -> CreditsScreen(currentVersion)
             }
         }
     }
@@ -283,6 +274,11 @@ fun DashboardScreen() {
     val dailyHour = prefs?.get(WidgetDataStore.KEY_DAILY_HOUR) ?: 0
     val dailyMinute = prefs?.get(WidgetDataStore.KEY_DAILY_MINUTE) ?: 0
     val slideshowMins = prefs?.get(WidgetDataStore.KEY_SLIDESHOW_MINUTES) ?: 60
+
+    // 朝活設定の読み込み
+    val isAsakatsu = prefs?.get(WidgetDataStore.KEY_ASAKATSU_MODE) ?: false
+    val startMillis = prefs?.get(WidgetDataStore.KEY_ASAKATSU_START_MILLIS) ?: System.currentTimeMillis()
+    val dayCount = WidgetDataStore.calculateAsakatsuDays(startMillis, System.currentTimeMillis())
 
     var currentTime by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -349,7 +345,12 @@ fun DashboardScreen() {
             FilledTonalButton(
                 onClick = {
                     if (youtubeId.isNotEmpty()) {
-                        val shareText = "今日のMIMIさんの曲は『$title』！\nhttps://www.youtube.com/watch?v=$youtubeId\n#MIMI_Widget"
+                        // 【変更】朝活のON/OFFに応じて、シェアテキストのフォーマットを切り替えます
+                        val shareText = if (isAsakatsu) {
+                            "MI民朝活${dayCount}日目\n今日の曲は「$title」！\n\n『$rawLyrics』\n\nhttps://www.youtube.com/watch?v=$youtubeId\n#MIMI_Widget"
+                        } else {
+                            "今日の曲は「$title」！\n\n『$rawLyrics』\n\nhttps://www.youtube.com/watch?v=$youtubeId\n#MIMI_Widget"
+                        }
                         context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, shareText) }, "シェアする"))
                     }
                 },
@@ -366,6 +367,7 @@ fun DashboardScreen() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GeneralSettingsScreen() {
     val context = LocalContext.current
@@ -383,9 +385,47 @@ fun GeneralSettingsScreen() {
     val noRepeat = prefs?.get(WidgetDataStore.KEY_NO_REPEAT) ?: false
     val debugMode = prefs?.get(WidgetDataStore.KEY_DEBUG_MODE_ENABLED) ?: false
 
+    // 朝活モードの状態
+    val isAsakatsu = prefs?.get(WidgetDataStore.KEY_ASAKATSU_MODE) ?: false
+    val asakatsuStartMillis = prefs?.get(WidgetDataStore.KEY_ASAKATSU_START_MILLIS) ?: System.currentTimeMillis()
+
+    var showDatePicker by remember { mutableStateOf(false) }
+    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = asakatsuStartMillis)
+
     val scrollState = rememberScrollState()
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     val isIgnoringBatteryOpt = pm.isIgnoringBatteryOptimizations(context.packageName)
+
+    // カレンダーUIの表示ダイアログ
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDatePicker = false
+                    datePickerState.selectedDateMillis?.let { utcMillis ->
+                        // UTCのミリ秒から、ローカルの0時0分（深夜）のミリ秒へ変換して正確に保存します
+                        val calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+                        calendar.timeInMillis = utcMillis
+                        val y = calendar.get(Calendar.YEAR)
+                        val m = calendar.get(Calendar.MONTH)
+                        val d = calendar.get(Calendar.DAY_OF_MONTH)
+                        val localMidnight = Calendar.getInstance().apply { set(y, m, d, 0, 0, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
+
+                        coroutineScope.launch {
+                            context.dataStore.edit { it[WidgetDataStore.KEY_ASAKATSU_START_MILLIS] = localMidnight }
+                            MimiWidget.forceUpdate(context)
+                        }
+                    }
+                }) { Text("決定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("キャンセル", color = Color.Gray) }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(bottom = 32.dp)) {
 
@@ -447,6 +487,24 @@ fun GeneralSettingsScreen() {
             }
         }
 
+        // 【新規】朝活モードの設定セクション
+        Text("朝活", modifier = Modifier.padding(start = 32.dp, top = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp)
+        SettingsCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("朝活モードを有効にする", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                Switch(checked = isAsakatsu, onCheckedChange = { isChecked -> coroutineScope.launch { context.dataStore.edit { it[WidgetDataStore.KEY_ASAKATSU_MODE] = isChecked }; MimiWidget.forceUpdate(context) } })
+            }
+            if (isAsakatsu) {
+                Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color.DarkGray)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { showDatePicker = true }.padding(vertical = 4.dp)) {
+                    val dateStr = SimpleDateFormat("yyyy年M月d日", Locale.JAPAN).format(asakatsuStartMillis)
+                    Text("開始日", modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                    Text(dateStr, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    Icon(Icons.Rounded.Edit, contentDescription = "Edit", modifier = Modifier.padding(start = 8.dp).size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+
         Text("バックグラウンド更新の安定化", modifier = Modifier.padding(start = 32.dp, top = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp)
         SettingsCard {
             Text("アラーム機能を使用するため、遅延はほとんど発生しませんが、もし止まる場合はバッテリー最適化をオフにしてください。", fontSize = 12.sp, color = Color.LightGray)
@@ -465,12 +523,12 @@ fun GeneralSettingsScreen() {
         SettingsCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("年の表示", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                Switch(checked = showYear, onCheckedChange = { isChecked -> coroutineScope.launch { context.dataStore.edit { it[WidgetDataStore.KEY_SHOW_YEAR] = isChecked }; MimiWidget.forceUpdate(context) } })
+                Switch(checked = showYear, onCheckedChange = { isChecked -> coroutineScope.launch { context.dataStore.edit { it[WidgetDataStore.KEY_SHOW_YEAR] = isChecked }; MimiWidget.forceUpdate(context) } }, enabled = !isAsakatsu)
             }
             Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color.DarkGray)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("曜日の表示", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                Switch(checked = showWeekday, onCheckedChange = { isChecked -> coroutineScope.launch { context.dataStore.edit { it[WidgetDataStore.KEY_SHOW_WEEKDAY] = isChecked }; MimiWidget.forceUpdate(context) } })
+                Switch(checked = showWeekday, onCheckedChange = { isChecked -> coroutineScope.launch { context.dataStore.edit { it[WidgetDataStore.KEY_SHOW_WEEKDAY] = isChecked }; MimiWidget.forceUpdate(context) } }, enabled = !isAsakatsu)
             }
             Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color.DarkGray)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -544,6 +602,7 @@ fun FontSettingContent(currentFamily: String, currentSize: Float, sizeRange: Clo
     Slider(value = localSize, onValueChange = { localSize = it }, onValueChangeFinished = { onSizeChange(localSize) }, valueRange = sizeRange)
 }
 
+// 【大幅変更】タブを追加し、「曲リスト」と「200件の履歴」を見やすく管理できるようにしました。
 @Composable
 fun SongsSettingsScreen() {
     val context = LocalContext.current
@@ -552,48 +611,99 @@ fun SongsSettingsScreen() {
     val prefs by context.dataStore.data.collectAsState(initial = null)
     val disabledSongs = prefs?.get(WidgetDataStore.KEY_DISABLED_SONGS) ?: emptySet()
 
+    // 履歴データの取得
+    val historyJson = prefs?.get(WidgetDataStore.KEY_UPDATE_HISTORY) ?: "[]"
+    val type = object : TypeToken<List<UpdateHistory>>() {}.type
+    val historyList: List<UpdateHistory> = try {
+        Gson().fromJson(historyJson, type) ?: emptyList()
+    } catch (e: Exception) { emptyList() }
+
+    var selectedSongTab by remember { mutableStateOf(0) }
+    val songTabs = listOf("曲リスト", "履歴 (${historyList.size})")
+
     LaunchedEffect(Unit) {
         songList = SongRepository(context).fetchAllSongs() ?: emptyList()
     }
 
-    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
-        item { Text("リストに含める曲", modifier = Modifier.padding(start = 32.dp, top = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp) }
+    Column(modifier = Modifier.fillMaxSize()) {
+        TabRow(
+            selectedTabIndex = selectedSongTab,
+            containerColor = MaterialTheme.colorScheme.background,
+            contentColor = MaterialTheme.colorScheme.primary
+        ) {
+            songTabs.forEachIndexed { index, title ->
+                Tab(
+                    selected = selectedSongTab == index,
+                    onClick = { selectedSongTab = index },
+                    text = { Text(title, fontWeight = FontWeight.Bold) }
+                )
+            }
+        }
 
-        items(songList) { song ->
-            val isEnabled = !disabledSongs.contains(song.youtubeId)
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clickable {
-                    coroutineScope.launch {
-                        context.dataStore.edit { preferences ->
-                            val currentDisabled = preferences[WidgetDataStore.KEY_DISABLED_SONGS] ?: emptySet()
-                            preferences[WidgetDataStore.KEY_DISABLED_SONGS] = if (isEnabled) currentDisabled + song.youtubeId else currentDisabled - song.youtubeId
+        if (selectedSongTab == 0) {
+            // タブ0: 曲の有効/無効リスト
+            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+                item { Text("リストに含める曲", modifier = Modifier.padding(start = 32.dp, top = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp) }
+                items(songList) { song ->
+                    val isEnabled = !disabledSongs.contains(song.youtubeId)
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clickable {
+                            coroutineScope.launch {
+                                context.dataStore.edit { preferences ->
+                                    val currentDisabled = preferences[WidgetDataStore.KEY_DISABLED_SONGS] ?: emptySet()
+                                    preferences[WidgetDataStore.KEY_DISABLED_SONGS] = if (isEnabled) currentDisabled + song.youtubeId else currentDisabled - song.youtubeId
+                                }
+                            }
+                        }
+                    ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            YoutubeThumbnail(
+                                youtubeId = song.youtubeId,
+                                modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp))
+                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = song.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (!song.lyrics.isNullOrEmpty()) {
+                                    Text(text = song.lyrics.replace("\n", " "), fontSize = 12.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            Switch(checked = isEnabled, onCheckedChange = null)
                         }
                     }
                 }
-            ) {
-                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    YoutubeThumbnail(
-                        youtubeId = song.youtubeId,
-                        modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp))
-                    )
-
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(text = song.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (!song.lyrics.isNullOrEmpty()) {
-                            Text(text = song.lyrics.replace("\n", " "), fontSize = 12.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        } else {
+            // タブ1: 最大200件の履歴リスト
+            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+                item { Text("今までに出てきた曲 (最大200件)", modifier = Modifier.padding(start = 32.dp, top = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp) }
+                if (historyList.isEmpty()) {
+                    item {
+                        Text("まだ履歴がありません", fontSize = 14.sp, color = Color.LightGray, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(32.dp))
+                    }
+                } else {
+                    items(historyList) { history ->
+                        val dateStr = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()).format(java.util.Date(history.timestamp))
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                        ) {
+                            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(dateStr, fontSize = 12.sp, color = Color.Gray, modifier = Modifier.width(120.dp))
+                                Text(history.title, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     }
-                    Switch(checked = isEnabled, onCheckedChange = null)
                 }
             }
         }
     }
 }
 
-// 【新規追加】バージョン情報を引数で受け取るように変更しました
+// 履歴機能を曲タブに移動したため、デバッグ画面をスッキリさせました。
 @Composable
 fun DebugScreen(currentVersion: String, latestVersion: String?) {
     val context = LocalContext.current
@@ -601,21 +711,12 @@ fun DebugScreen(currentVersion: String, latestVersion: String?) {
     var songList by remember { mutableStateOf<List<Song>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
 
-    val prefs by context.dataStore.data.collectAsState(initial = null)
-
-    val historyJson = prefs?.get(WidgetDataStore.KEY_UPDATE_HISTORY) ?: "[]"
-    val type = object : TypeToken<List<UpdateHistory>>() {}.type
-    val historyList: List<UpdateHistory> = try {
-        Gson().fromJson(historyJson, type) ?: emptyList()
-    } catch (e: Exception) { emptyList() }
-
     LaunchedEffect(Unit) {
         songList = SongRepository(context).fetchAllSongs() ?: emptyList()
     }
 
     Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
 
-        // --- 【新規追加】アプリのバージョン情報をデバッグ画面のトップに表示 ---
         Text("アプリ情報", modifier = Modifier.padding(start = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp)
         SettingsCard {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -628,26 +729,6 @@ fun DebugScreen(currentVersion: String, latestVersion: String?) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("GitHubの最新リリース", fontSize = 14.sp, color = Color.Gray)
                 Text(if (latestVersion != null) "v$latestVersion" else "取得中/オフライン", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (latestVersion != null && isNewerVersion(latestVersion, currentVersion)) MaterialTheme.colorScheme.primary else Color.White)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text("更新履歴 (最新10件)", modifier = Modifier.padding(start = 16.dp, bottom = 8.dp), color = Color.Gray, fontSize = 14.sp)
-        SettingsCard {
-            if (historyList.isEmpty()) {
-                Text("まだ履歴がありません", fontSize = 14.sp, color = Color.LightGray)
-            } else {
-                historyList.forEachIndexed { index, history ->
-                    val dateStr = java.text.SimpleDateFormat("MM/dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(history.timestamp))
-                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(dateStr, fontSize = 12.sp, color = Color.Gray, modifier = Modifier.width(110.dp))
-                        Text(history.title, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    if (index < historyList.size - 1) {
-                        Divider(color = Color.DarkGray, thickness = 0.5.dp)
-                    }
-                }
             }
         }
 
@@ -691,7 +772,6 @@ fun DebugScreen(currentVersion: String, latestVersion: String?) {
     }
 }
 
-// 【新規追加】自動で現在のバージョンを読み込むように修正しました
 @Composable
 fun CreditsScreen(currentVersion: String) {
     val context = LocalContext.current
@@ -703,7 +783,6 @@ fun CreditsScreen(currentVersion: String) {
         Spacer(modifier = Modifier.height(64.dp))
 
         Text("MIMI Widget", fontSize = 32.sp, fontWeight = FontWeight.ExtraBold)
-        // 手書きから、システムから自動取得したバージョンを表示するように変更しました
         Text("Version $currentVersion", color = Color.Gray, fontSize = 14.sp)
 
         Spacer(modifier = Modifier.height(48.dp))
@@ -802,6 +881,7 @@ fun CreditsScreen(currentVersion: String) {
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
         }
+
         Spacer(modifier = Modifier.height(64.dp))
     }
 }
